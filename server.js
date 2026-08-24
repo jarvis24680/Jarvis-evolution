@@ -1,53 +1,49 @@
-const express=require("express");
-const path=require("path");
-const fs=require("fs");
+const express = require("express");
+const path = require("path");
+const fs = require("fs");
 
-const app=express();
+const app = express();
 
-app.use(express.json({limit:"12mb"}));
-app.use(express.static(path.join(__dirname,"public")));
+app.use(express.json({ limit: "12mb" }));
+app.use(express.static(path.join(__dirname, "public")));
 
-const PORT=process.env.PORT||3000;
+const PORT = process.env.PORT || 3000;
 
-const GEMINI_KEY=process.env.GEMINI_API_KEY||process.env.GOOGLE_API_KEY;
-const OPENAI_KEY=process.env.OPENAI_API_KEY;
+const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+const OPENAI_KEY = process.env.OPENAI_API_KEY;
 
-const DATA=path.join(__dirname,"data");
-const LAB=path.join(__dirname,"evolution-lab");
+const DATA = path.join(__dirname, "data");
+const LAB = path.join(__dirname, "evolution-lab");
 
-fs.mkdirSync(DATA,{recursive:true});
-fs.mkdirSync(LAB,{recursive:true});
+fs.mkdirSync(DATA, { recursive: true });
+fs.mkdirSync(LAB, { recursive: true });
 
-const files={
-  memory:path.join(DATA,"memory.json"),
-  journal:path.join(DATA,"learning-journal.json"),
-  events:path.join(DATA,"evolution-events.json")
+const files = {
+  memory: path.join(DATA, "memory.json"),
+  journal: path.join(DATA, "learning-journal.json"),
+  events: path.join(DATA, "evolution-events.json")
 };
 
-const read=(p,d)=>{
-  try{
-    return JSON.parse(fs.readFileSync(p,"utf8"));
-  }catch{
-    return d;
+const read = (p, fallback) => {
+  try {
+    return JSON.parse(fs.readFileSync(p, "utf8"));
+  } catch {
+    return fallback;
   }
 };
 
-const write=(p,v)=>{
-  fs.writeFileSync(p,JSON.stringify(v,null,2));
+const write = (p, value) => {
+  fs.writeFileSync(p, JSON.stringify(value, null, 2));
 };
 
-if(!fs.existsSync(files.memory))
-  write(files.memory,{facts:[],preferences:[],goals:[],projects:[]});
+if (!fs.existsSync(files.memory)) {
+  write(files.memory, { facts: [], preferences: [], goals: [], projects: [] });
+}
+if (!fs.existsSync(files.journal)) write(files.journal, []);
+if (!fs.existsSync(files.events)) write(files.events, []);
 
-if(!fs.existsSync(files.journal))
-  write(files.journal,[]);
-
-if(!fs.existsSync(files.events))
-  write(files.events,[]);
-
-const SYSTEM=`You are JARVIS, an expandable personal AI assistant.
-Gemini is your primary reasoning engine.
-You have long-term structured memory, image understanding, optional OpenAI review,
+const SYSTEM = `You are JARVIS, an expandable personal AI assistant.
+You have long-term structured memory, image understanding, optional OpenAI fallback,
 and a self-improvement laboratory.
 
 You may learn useful information and save it to memory.
@@ -55,389 +51,420 @@ You may create candidate improvements in the isolated evolution lab.
 Never silently overwrite production code.
 Notify the user when you identify a meaningful evolution.
 Never expose API keys.
-
 Be capable, calm, concise and transparent.`;
 
-function normalizeMessages(messages){
+function normalizeMessages(messages) {
+  return messages.map((m) => ({
+    role: m.role === "assistant" ? "model" : "user",
+    parts: Array.isArray(m.content)
+      ? m.content.map((c) => {
+          if (c.type === "text") return { text: String(c.text || "") };
 
-  return messages.map(m=>({
+          if (c.type === "image_url" && c.image_url?.url) {
+            const url = c.image_url.url;
+            const match = url.match(/^data:(.*?);base64,/);
+            if (match) {
+              return {
+                inline_data: {
+                  mime_type: match[1] || "image/jpeg",
+                  data: url.split(",")[1]
+                }
+              };
+            }
+          }
 
-    role:m.role==="assistant"?"model":"user",
-
-    parts:Array.isArray(m.content)
-
-      ? m.content.map(c=>{
-
-          if(c.type==="text")
-            return {text:c.text};
-
-          if(c.type==="image_url"&&c.image_url?.url){
-
-            const match=
-              c.image_url.url.match(/^data:(.*?);base64,/);
-
+          if (c.type === "image" && c.source?.data) {
             return {
-              inline_data:{
-                mime_type:match?.[1]||"image/jpeg",
-                data:c.image_url.url.split(",")[1]
+              inline_data: {
+                mime_type: c.source.media_type || "image/jpeg",
+                data: c.source.data
               }
             };
           }
 
-          if(c.type==="image"&&c.source?.data){
-
-            return {
-              inline_data:{
-                mime_type:c.source.media_type||"image/jpeg",
-                data:c.source.data
-              }
-            };
-          }
-
-          return {
-            text:String(c.text||"")
-          };
-
+          return { text: String(c.text || "") };
         })
-
-      :[
-          {
-            text:String(m.content||"")
-          }
-        ]
-
+      : [{ text: String(m.content || "") }]
   }));
 }
 
-async function gemini(messages,extra=""){
+function isRetryableGeminiError(status, message) {
+  const text = String(message || "").toLowerCase();
 
-  if(!GEMINI_KEY)
-    throw new Error("GEMINI_API_KEY is not configured.");
+  return (
+    status === 408 ||
+    status === 429 ||
+    status >= 500 ||
+    text.includes("high demand") ||
+    text.includes("temporarily") ||
+    text.includes("overloaded") ||
+    text.includes("unavailable") ||
+    text.includes("try again later")
+  );
+}
 
-  const memory=read(files.memory,{});
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-  const body={
-    contents:normalizeMessages(messages),
-
-    systemInstruction:{
-      parts:[
+async function callGeminiModel(model, messages, extra = "") {
+  const memory = read(files.memory, {});
+  const body = {
+    contents: normalizeMessages(messages),
+    systemInstruction: {
+      parts: [
         {
           text:
-            `${SYSTEM}
-
-MEMORY:
-${JSON.stringify(memory).slice(0,16000)}
-
-${extra}`
+            `${SYSTEM}\n\nMEMORY:\n${JSON.stringify(memory).slice(0, 16000)}\n\n${extra}`
         }
       ]
     }
   };
 
-  const model=
-    process.env.GEMINI_MODEL||"gemini-3.7-flash";
-
-  const url=
+  const url =
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
-  const r=await fetch(url,{
-    method:"POST",
-
-    headers:{
-      "content-type":"application/json",
-      "x-goog-api-client":"jarvis/1.0",
-      "x-goog-api-key":GEMINI_KEY
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-goog-api-client": "jarvis/1.0",
+      "x-goog-api-key": GEMINI_KEY
     },
-
-    body:JSON.stringify(body)
+    body: JSON.stringify(body)
   });
 
-  const d=await r.json();
+  const data = await response.json().catch(() => ({}));
 
-  if(!r.ok)
+  if (!response.ok) {
+    const message =
+      data?.error?.message || `Gemini request failed (${response.status})`;
+
+    const error = new Error(message);
+    error.status = response.status;
+    error.model = model;
+    throw error;
+  }
+
+  const text = (data.candidates?.[0]?.content?.parts || [])
+    .map((p) => p.text || "")
+    .join("");
+
+  if (!text) {
+    const error = new Error("Gemini returned an empty response.");
+    error.status = 500;
+    error.model = model;
+    throw error;
+  }
+
+  return { text, raw: data, model };
+}
+
+async function gemini(messages, extra = "") {
+  if (!GEMINI_KEY) {
+    throw new Error("GEMINI_API_KEY is not configured.");
+  }
+
+  const primary = process.env.GEMINI_MODEL || "gemini-3.7-flash";
+
+  const configuredFallbacks = String(
+    process.env.GEMINI_FALLBACK_MODELS ||
+      "gemini-3.6-flash,gemini-3.5-flash-lite"
+  )
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+
+  const models = [...new Set([primary, ...configuredFallbacks])];
+  let lastError = null;
+
+  for (const model of models) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        return await callGeminiModel(model, messages, extra);
+      } catch (error) {
+        lastError = error;
+
+        if (!isRetryableGeminiError(error.status, error.message)) {
+          break;
+        }
+
+        if (attempt < 2) {
+          const delay = 1000 * Math.pow(2, attempt) + Math.floor(Math.random() * 500);
+          console.log(
+            `Gemini ${model} unavailable; retrying in ${delay}ms...`
+          );
+          await sleep(delay);
+        }
+      }
+    }
+
+    console.log(`Gemini model ${model} failed; trying next fallback model.`);
+  }
+
+  throw lastError || new Error("All Gemini models failed.");
+}
+
+function toOpenAIInput(messages) {
+  return messages.map((m) => {
+    const role = m.role === "assistant" ? "assistant" : "user";
+
+    if (!Array.isArray(m.content)) {
+      return {
+        role,
+        content: String(m.content || "")
+      };
+    }
+
+    const content = [];
+
+    for (const c of m.content) {
+      if (c.type === "text") {
+        content.push({
+          type: "input_text",
+          text: String(c.text || "")
+        });
+      } else if (c.type === "image_url" && c.image_url?.url) {
+        content.push({
+          type: "input_image",
+          image_url: c.image_url.url
+        });
+      } else if (c.type === "image" && c.source?.data) {
+        content.push({
+          type: "input_image",
+          image_url:
+            `data:${c.source.media_type || "image/jpeg"};base64,${c.source.data}`
+        });
+      }
+    }
+
+    return { role, content };
+  });
+}
+
+async function openaiFallback(messages, extra = "") {
+  if (!OPENAI_KEY) {
+    throw new Error("OpenAI fallback is not configured.");
+  }
+
+  const model = process.env.OPENAI_MODEL || "gpt-5.6";
+
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${OPENAI_KEY}`
+    },
+    body: JSON.stringify({
+      model,
+      instructions: `${SYSTEM}\n\n${extra}`,
+      input: toOpenAIInput(messages)
+    })
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
     throw new Error(
-      d?.error?.message||"Gemini request failed"
+      data?.error?.message || `OpenAI request failed (${response.status})`
     );
+  }
 
-  const text=
-    (d.candidates?.[0]?.content?.parts||[])
-      .map(p=>p.text||"")
-      .join("");
+  const text = data.output_text || "";
+
+  if (!text) {
+    throw new Error("OpenAI returned an empty response.");
+  }
 
   return {
     text,
-    raw:d
+    raw: data,
+    model
   };
 }
 
-async function openaiReview(messages){
+function saveMemory(category, text) {
+  const memory = read(files.memory, {
+    facts: [],
+    preferences: [],
+    goals: [],
+    projects: []
+  });
 
-  if(!OPENAI_KEY)
-    return null;
-
-  const r=await fetch(
-    "https://api.openai.com/v1/responses",
-    {
-      method:"POST",
-
-      headers:{
-        "content-type":"application/json",
-        "authorization":`Bearer ${OPENAI_KEY}`
-      },
-
-      body:JSON.stringify({
-        model:process.env.OPENAI_MODEL||"gpt-5",
-        instructions:SYSTEM,
-        input:messages
-      })
-    }
-  );
-
-  const d=await r.json();
-
-  if(!r.ok)
-    throw new Error(
-      d?.error?.message||"OpenAI request failed"
-    );
-
-  return d.output_text||"";
-}
-
-function saveMemory(category,text){
-
-  const m=read(
-    files.memory,
-    {
-      facts:[],
-      preferences:[],
-      goals:[],
-      projects:[]
-    }
-  );
-
-  if(m[category]){
-
-    m[category].push({
-      text:String(text).slice(0,2000),
-      savedAt:new Date().toISOString()
+  if (memory[category]) {
+    memory[category].push({
+      text: String(text).slice(0, 2000),
+      savedAt: new Date().toISOString()
     });
 
-    write(files.memory,m);
+    write(files.memory, memory);
   }
 }
 
-function proposal(file,content,reason){
-
-  const safe=
-    String(file)
-      .replace(/^[/\\]+/,"")
-      .replace(/\.\./g,"");
-
-  const target=
-    path.join(LAB,safe);
-
-  fs.mkdirSync(
-    path.dirname(target),
-    {recursive:true}
-  );
-
-  fs.writeFileSync(
-    target,
-    String(content)
-  );
-
-  const e=read(files.events,[]);
-
-  e.push({
-    id:Date.now().toString(),
-    type:"code-evolution-proposed",
-    file:safe,
-    reason:String(reason).slice(0,2000),
-    createdAt:new Date().toISOString(),
-    status:"awaiting-user-review"
-  });
-
-  write(files.events,e);
-}
-
-app.post("/api/chat",async(req,res)=>{
-
-  try{
-
+app.post("/api/chat", async (req, res) => {
+  try {
     const {
       messages,
-      system="",
-      useOpenAI=false
-    }=req.body||{};
+      system = "",
+      useOpenAI = false
+    } = req.body || {};
 
-    if(!Array.isArray(messages)||!messages.length){
-
-      return res.status(400).json({
-        error:"Invalid messages"
-      });
-
+    if (!Array.isArray(messages) || !messages.length) {
+      return res.status(400).json({ error: "Invalid messages" });
     }
 
-    const d=
-      await gemini(messages,system);
+    let answer;
+    let provider = "gemini";
+    let geminiError = null;
 
-    let review=null;
+    try {
+      answer = await gemini(messages, system);
+    } catch (error) {
+      geminiError = error;
+      console.error("Gemini exhausted:", error.message);
 
-    if(useOpenAI&&OPENAI_KEY)
-      review=await openaiReview(messages);
+      if (!OPENAI_KEY) {
+        throw error;
+      }
 
+      console.log("Falling back to OpenAI...");
+      answer = await openaiFallback(messages, system);
+      provider = "openai";
+    }
+
+    let review = null;
+
+    // Optional explicit OpenAI review, if the frontend/server caller requests it.
+    if (useOpenAI && OPENAI_KEY && provider !== "openai") {
+      try {
+        review = await openaiFallback(messages, system);
+      } catch (error) {
+        console.error("OpenAI review failed:", error.message);
+      }
+    }
+
+    // IMPORTANT: The existing Jarvis frontend expects data.content.
     res.json({
-      assistant:d.text,
-      gemini:d.raw,
-      openai:review,
-      memory:read(files.memory,{})
-    });
-
-  }catch(e){
-
-    console.error("CHAT ERROR:",e);
-
-    res.status(500).json({
-      error:e.message
-    });
-
-  }
-
-});
-
-app.get("/api/memory",(req,res)=>{
-
-  res.json(
-    read(files.memory,{})
-  );
-
-});
-
-app.get("/api/evolution",(req,res)=>{
-
-  res.json(
-    read(files.events,[])
-  );
-
-});
-
-app.post("/api/learn",async(req,res)=>{
-
-  try{
-
-    const {
-      category,
-      text
-    }=req.body||{};
-
-    if(!category||!text){
-
-      return res.status(400).json({
-        error:"category and text required"
-      });
-
-    }
-
-    saveMemory(category,text);
-
-    const j=
-      read(files.journal,[]);
-
-    j.push({
-      type:"learning",
-      text:String(text).slice(0,2000),
-      createdAt:new Date().toISOString()
-    });
-
-    write(files.journal,j);
-
-    res.json({
-      ok:true
-    });
-
-  }catch(e){
-
-    res.status(500).json({
-      error:e.message
-    });
-
-  }
-
-});
-
-app.post("/api/evolve",async(req,res)=>{
-
-  try{
-
-    const goal=
-      String(req.body?.goal||"");
-
-    if(!goal){
-
-      return res.status(400).json({
-        error:"goal required"
-      });
-
-    }
-
-    const d=
-      await gemini([
+      content: [
         {
-          role:"user",
-          content:
-            `Find a meaningful reversible improvement for JARVIS toward this goal:
-
-${goal}
-
-Provide an implementation plan and candidate code only where useful.
-Candidate code must remain isolated and production must not be overwritten.`
+          type: "text",
+          text: answer.text
         }
-      ]);
-
-    const e=
-      read(files.events,[]);
-
-    e.push({
-      id:Date.now().toString(),
-      type:"evolution-identified",
-      goal,
-      proposal:d.text,
-      createdAt:new Date().toISOString(),
-      status:"awaiting-user-review"
+      ],
+      assistant: answer.text,
+      provider,
+      model: answer.model,
+      fallbackUsed: provider === "openai",
+      geminiError: geminiError ? String(geminiError.message) : null,
+      openai: review,
+      memory: read(files.memory, {})
     });
-
-    write(files.events,e);
-
-    res.json({
-      proposal:d.text
-    });
-
-  }catch(e){
+  } catch (error) {
+    console.error("CHAT ERROR:", error);
 
     res.status(500).json({
-      error:e.message
+      error: error.message || "Unable to reach an AI provider.",
+      provider: "none"
+    });
+  }
+});
+
+app.get("/api/memory", (req, res) => {
+  res.json(read(files.memory, {}));
+});
+
+app.get("/api/evolution", (req, res) => {
+  res.json(read(files.events, []));
+});
+
+app.post("/api/learn", async (req, res) => {
+  try {
+    const { category, text } = req.body || {};
+
+    if (!category || !text) {
+      return res.status(400).json({
+        error: "category and text required"
+      });
+    }
+
+    saveMemory(category, text);
+
+    const journal = read(files.journal, []);
+
+    journal.push({
+      type: "learning",
+      text: String(text).slice(0, 2000),
+      createdAt: new Date().toISOString()
     });
 
-  }
+    write(files.journal, journal);
 
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
-app.get("/health",(req,res)=>{
+app.post("/api/evolve", async (req, res) => {
+  try {
+    const goal = String(req.body?.goal || "");
 
+    if (!goal) {
+      return res.status(400).json({
+        error: "goal required"
+      });
+    }
+
+    const answer = await gemini([
+      {
+        role: "user",
+        content:
+          `Find a meaningful reversible improvement for JARVIS toward this goal:\n${goal}\n\n` +
+          `Provide an implementation plan and candidate code only where useful. ` +
+          `Candidate code must remain isolated and production must not be overwritten.`
+      }
+    ]);
+
+    const events = read(files.events, []);
+
+    events.push({
+      id: Date.now().toString(),
+      type: "evolution-identified",
+      goal,
+      proposal: answer.text,
+      createdAt: new Date().toISOString(),
+      status: "awaiting-user-review"
+    });
+
+    write(files.events, events);
+
+    res.json({
+      proposal: answer.text,
+      provider: answer.model
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+app.get("/health", (req, res) => {
   res.json({
-    ok:true,
-    gemini:!!GEMINI_KEY,
-    openai:!!OPENAI_KEY,
-    provider:"gemini"
+    ok: true,
+    gemini: !!GEMINI_KEY,
+    openai: !!OPENAI_KEY,
+    providerMode: "gemini-with-openai-fallback",
+    primaryModel: process.env.GEMINI_MODEL || "gemini-3.7-flash",
+    fallbackModels: String(
+      process.env.GEMINI_FALLBACK_MODELS ||
+        "gemini-3.6-flash,gemini-3.5-flash-lite"
+    )
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean),
+    openaiModel: process.env.OPENAI_MODEL || "gpt-5.6"
   });
-
 });
 
-app.listen(
-  PORT,
-  ()=>{
-    console.log(
-      `JARVIS Gemini backend running on ${PORT}`
-    );
-  }
-);
+app.listen(PORT, () => {
+  console.log(`JARVIS backend running on ${PORT}`);
+});
