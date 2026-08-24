@@ -27,7 +27,22 @@
 </style>
 </head>
 <body>
-<div id="root"></div>
+<div id="root">
+  <div style="color:white;padding:30px;font-family:Arial">
+    Loading JARVIS...
+  </div>
+</div>
+
+<script>
+window.onerror = function(message, source, line, column, error) {
+  document.getElementById("root").innerHTML =
+    '<div style="color:#ff6b6b;padding:30px;font-family:Arial">' +
+    '<h2>JARVIS startup error</h2>' +
+    '<p>' + message + '</p>' +
+    '<p>Line: ' + line + '</p>' +
+    '</div>';
+};
+</script>
 
 <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
