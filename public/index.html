@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Jarvis</title>
+<meta name="theme-color" content="#07090E" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Jarvis" />
+<link rel="manifest" href="/manifest.json" />
+<link rel="apple-touch-icon" href="/icon-192.png" />
+<link rel="icon" href="/icon-192.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; background: #07090E; }
+  body { font-family: 'Inter', -apple-system, sans-serif; color: #F0F6FC; overflow: hidden; }
+  #root { height: 100vh; height: 100dvh; }
+  ::selection { background: rgba(201,162,39,0.35); }
+  .scroll::-webkit-scrollbar { width: 6px; }
+  .scroll::-webkit-scrollbar-thumb { background: rgba(0,242,254,0.24); border-radius: 3px; }
+  textarea:focus, button:focus-visible { outline: 2px solid #00F2FE; outline-offset: 2px; }
+  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(193,81,45,0.35); } 50% { box-shadow: 0 0 0 6px rgba(193,81,45,0); } }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* ===== JARVIS CORE REDESIGN ===== */
+:root{
+  --core-bg:#07090e;
+  --core-panel:rgba(13,17,23,.78);
+  --core-border:rgba(255,255,255,.08);
+  --core-cyan:#00f2fe;
+  --core-blue:#4facfe;
+  --core-text:#f0f6fc;
+  --core-muted:#8b949e;
+}
+body{
+  background:
+    radial-gradient(circle at 10% 10%,rgba(0,242,254,.055),transparent 38%),
+    radial-gradient(circle at 90% 90%,rgba(79,172,254,.055),transparent 40%),
+    var(--core-bg)!important;
+  color:var(--core-text)!important;
+}
+body:before{
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:
+    linear-gradient(rgba(255,255,255,.012) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(255,255,255,.012) 1px,transparent 1px);
+  background-size:48px 48px;
+  mask-image:linear-gradient(to bottom,black,transparent 88%);
+}
+#root{position:relative;z-index:1}
+@keyframes corePulse{
+  0%,100%{box-shadow:0 0 0 0 rgba(0,242,254,.18),0 0 18px rgba(0,242,254,.08)}
+  50%{box-shadow:0 0 0 7px rgba(0,242,254,0),0 0 28px rgba(0,242,254,.14)}
+}
+
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+
+<script>
+window.addEventListener("error", function (e) {
+  document.body.innerHTML =
+    '<div style="padding:30px;color:#ff6b6b;background:#07090E;font-family:Arial;min-height:100vh">' +
+    '<h2>JARVIS startup error</h2>' +
+    '<pre style="white-space:pre-wrap">' +
+    String(e.message || e.error || "Unknown error") +
+    '</pre></div>';
+});
+window.addEventListener("unhandledrejection", function (e) {
+  document.body.innerHTML =
+    '<div style="padding:30px;color:#ff6b6b;background:#07090E;font-family:Arial;min-height:100vh">' +
+    '<h2>JARVIS startup error</h2>' +
+    '<pre style="white-space:pre-wrap">' +
+    String(e.reason || "Unhandled promise rejection") +
+    '</pre></div>';
+});
+</script>
+
+<script src="/app.js"></script>
+</body>
+</html>
