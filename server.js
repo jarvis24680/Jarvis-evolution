@@ -12,6 +12,10 @@ const PORT = process.env.PORT || 3000;
 const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
 
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+const GITHUB_REPO = process.env.GITHUB_REPO;
+const GITHUB_BASE_BRANCH = process.env.GITHUB_BASE_BRANCH || "main";
+
 const DATA = path.join(__dirname, "data");
 const LAB = path.join(__dirname, "evolution-lab");
 
@@ -290,6 +294,135 @@ async function openaiFallback(messages, extra = "") {
     model
   };
 }
+async function githubRequest(endpoint, options = {}) {
+  if (!GITHUB_TOKEN) {
+    throw new Error("GITHUB_TOKEN is not configured.");
+  }
+
+  if (!GITHUB_REPO) {
+    throw new Error("GITHUB_REPO is not configured.");
+  }
+
+  const response = await fetch(
+    `https://api.github.com/repos/${GITHUB_REPO}${endpoint}`,
+    {
+      ...options,
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${GITHUB_TOKEN}`,
+        "X-GitHub-Api-Version": "2022-11-28",
+        "Content-Type": "application/json",
+        ...(options.headers || {})
+      }
+    }
+  );
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(
+      data?.message || `GitHub API error: ${response.status}`
+    );
+  }
+
+  return data;
+}
+
+
+async function githubGetBranch(branch) {
+  return githubRequest(
+    `/git/ref/heads/${encodeURIComponent(branch)}`
+  );
+}
+
+
+async function githubCreateBranch(branch) {
+  const base = await githubGetBranch(
+    GITHUB_BASE_BRANCH
+  );
+
+  return githubRequest("/git/refs", {
+    method: "POST",
+    body: JSON.stringify({
+      ref: `refs/heads/${branch}`,
+      sha: base.object.sha
+    })
+  });
+}
+
+
+async function githubGetFile(filePath, branch) {
+  const encodedPath = filePath
+    .split("/")
+    .map(encodeURIComponent)
+    .join("/");
+
+  return githubRequest(
+    `/contents/${encodedPath}?ref=${encodeURIComponent(branch)}`
+  );
+}
+
+
+async function githubUpdateFile({
+  filePath,
+  content,
+  branch,
+  message
+}) {
+  let existing = null;
+
+  try {
+    existing = await githubGetFile(
+      filePath,
+      branch
+    );
+  } catch (error) {
+    if (!String(error.message).includes("Not Found")) {
+      throw error;
+    }
+  }
+
+  const body = {
+    message,
+    content: Buffer.from(
+      content,
+      "utf8"
+    ).toString("base64"),
+    branch
+  };
+
+  if (existing?.sha) {
+    body.sha = existing.sha;
+  }
+
+  return githubRequest(
+    `/contents/${filePath
+      .split("/")
+      .map(encodeURIComponent)
+      .join("/")}`,
+    {
+      method: "PUT",
+      body: JSON.stringify(body)
+    }
+  );
+}
+
+
+async function githubCreatePullRequest({
+  branch,
+  title,
+  body
+}) {
+  return githubRequest("/pulls", {
+    method: "POST",
+    body: JSON.stringify({
+      title,
+      head: branch,
+      base: GITHUB_BASE_BRANCH,
+      body
+    })
+  });
+}
 
 function saveMemory(category, text) {
   const memory = read(files.memory, {
@@ -308,6 +441,26 @@ function saveMemory(category, text) {
     write(files.memory, memory);
   }
 }
+app.get("/api/github/status", async (req, res) => {
+  try {
+    const repo = await githubRequest("");
+
+    res.json({
+      ok: true,
+      repository: repo.full_name,
+      private: repo.private,
+      github: true
+    });
+
+  } catch (error) {
+    console.error("GITHUB STATUS ERROR:", error);
+
+    res.status(500).json({
+      ok: false,
+      error: error.message
+    });
+  }
+});
 
 app.post("/api/chat", async (req, res) => {
   try {
@@ -455,6 +608,70 @@ app.post("/api/evolve", async (req, res) => {
   } catch (error) {
     res.status(500).json({
       error: error.message
+    });
+  }
+});
+app.post("/api/github/change", async (req, res) => {
+  try {
+    const {
+      filePath,
+      content,
+      goal = "Jarvis code improvement"
+    } = req.body || {};
+
+    if (!filePath || typeof content !== "string") {
+      return res.status(400).json({
+        error: "filePath and content are required"
+      });
+    }
+
+    if (
+      filePath.startsWith(".github/") ||
+      filePath.includes(".env") ||
+      filePath.toLowerCase().includes("secret")
+    ) {
+      return res.status(403).json({
+        error: "This file is protected."
+      });
+    }
+
+    const branch =
+      `jarvis-evolution-${Date.now()}`;
+
+    await githubCreateBranch(branch);
+
+    await githubUpdateFile({
+      filePath,
+      content,
+      branch,
+      message: `Jarvis evolution: ${goal}`
+    });
+
+    const pullRequest =
+      await githubCreatePullRequest({
+        branch,
+        title: `Jarvis evolution: ${goal}`,
+        body:
+          `JARVIS generated a proposed code change.\n\n` +
+          `Goal: ${goal}\n\n` +
+          `Branch: ${branch}\n\n` +
+          `This change requires human review before merging into ${GITHUB_BASE_BRANCH}.`
+      });
+
+    res.json({
+      ok: true,
+      branch,
+      pullRequest: pullRequest.html_url,
+      message:
+        "Change created successfully. Review the pull request before merging."
+    });
+
+  } catch (error) {
+    console.error("GITHUB CHANGE ERROR:", error);
+
+    res.status(500).json({
+      error: error.message ||
+        "GitHub operation failed."
     });
   }
 });
