@@ -1,0 +1,34 @@
+name: Verify
+
+on:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  syntax-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Check server.js is valid JavaScript
+        run: node --check server.js
+
+      - name: Check public/app.js is valid JavaScript
+        run: node --check public/app.js
+
+      - name: Check package.json is valid JSON
+        run: node -e "JSON.parse(require('fs').readFileSync('package.json','utf8'))"
+
+      - name: Check public/manifest.json is valid JSON
+        run: node -e "JSON.parse(require('fs').readFileSync('public/manifest.json','utf8'))"
+
+      - name: Confirm index.html has no leftover Babel/JSX runtime
+        run: |
+          if grep -qi "babel" public/index.html; then
+            echo "index.html still references Babel — should be precompiled app.js only."
+            exit 1
+          fi
