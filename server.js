@@ -234,11 +234,11 @@ async function gemini(messages, extra = "", useWeb = false, allowGithubTools = f
     throw new Error("GEMINI_API_KEY is not configured.");
   }
 
-  const primary = process.env.GEMINI_MODEL || "gemini-3.7-flash";
+  const primary = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
   const configuredFallbacks = String(
     process.env.GEMINI_FALLBACK_MODELS ||
-      "gemini-3.6-flash,gemini-3.5-flash-lite"
+      "gemini-1.5-flash,gemini-1.5-pro"
   )
     .split(",")
     .map((x) => x.trim())
@@ -316,7 +316,7 @@ async function openaiFallback(messages, extra = "") {
     throw new Error("OpenAI fallback is not configured.");
   }
 
-  const model = process.env.OPENAI_MODEL || "gpt-5.6";
+  const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
@@ -561,7 +561,13 @@ async function executeGithubTool(name, args = {}) {
       const file = await githubGetFile(filePath, branch);
       if (!file?.content) throw new Error("GitHub did not return file content.");
       const content = Buffer.from(file.content.replace(/\n/g, ""), "base64").toString("utf8");
-      return { filePath, branch, content: content.slice(0, 30000) };
+      return {
+        filePath,
+        branch,
+        content: content.slice(0, 30000),
+        totalLength: content.length,
+        truncated: content.length > 30000
+      };
     }
 
     case "github_propose_change": {
@@ -839,15 +845,15 @@ app.get("/health", (req, res) => {
     gemini: !!GEMINI_KEY,
     openai: !!OPENAI_KEY,
     providerMode: "gemini-with-openai-fallback",
-    primaryModel: process.env.GEMINI_MODEL || "gemini-3.7-flash",
+    primaryModel: process.env.GEMINI_MODEL || "gemini-2.5-flash",
     fallbackModels: String(
       process.env.GEMINI_FALLBACK_MODELS ||
-        "gemini-3.6-flash,gemini-3.5-flash-lite"
+        "gemini-1.5-flash,gemini-1.5-pro"
     )
       .split(",")
       .map((x) => x.trim())
       .filter(Boolean),
-    openaiModel: process.env.OPENAI_MODEL || "gpt-5.6"
+    openaiModel: process.env.OPENAI_MODEL || "gpt-4o-mini"
   });
 });
 
